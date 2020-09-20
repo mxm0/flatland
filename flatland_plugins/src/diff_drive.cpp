@@ -127,6 +127,14 @@ void DiffDrive::OnInitialize(const YAML::Node& config) {
   ground_truth_msg_.twist.covariance.fill(0);
   ground_truth_msg_.pose.covariance.fill(0);
   odom_msg_ = ground_truth_msg_;
+  timestamp_ = ros::Time(0);
+  odom_msg_.pose.pose.position.x = 0.0;
+  odom_msg_.pose.pose.position.y = 0.0;
+  odom_msg_.pose.pose.position.z = 0.0;
+  odom_msg_.pose.pose.orientation.x = 0.0;
+  odom_msg_.pose.pose.orientation.y = 0.0;
+  odom_msg_.pose.pose.orientation.z = 0.0;
+  odom_msg_.pose.pose.orientation.w = 1.0;
 
   // copy from std::array to boost array
   for (unsigned int i = 0; i < 36; i++) {
@@ -173,6 +181,8 @@ void DiffDrive::BeforePhysicsStep(const Timekeeper& timekeeper) {
     b2Vec2 linear_vel_local =
         b2body->GetLinearVelocityFromLocalPoint(b2Vec2(0, 0));
     float angular_vel = b2body->GetAngularVelocity();
+    float linear_vel = cos(angle) * linear_vel_local.x +
+                       sin(angle) * linear_vel_local.y;
 
     ground_truth_msg_.header.stamp = timekeeper.GetSimTime();
     ground_truth_msg_.pose.pose.position.x = position.x;
@@ -189,15 +199,38 @@ void DiffDrive::BeforePhysicsStep(const Timekeeper& timekeeper) {
 
     // add the noise to odom messages
     odom_msg_.header.stamp = timekeeper.GetSimTime();
-    odom_msg_.pose.pose = ground_truth_msg_.pose.pose;
-    odom_msg_.twist.twist = ground_truth_msg_.twist.twist;
-    odom_msg_.pose.pose.position.x += noise_gen_[0](rng_);
-    odom_msg_.pose.pose.position.y += noise_gen_[1](rng_);
-    odom_msg_.pose.pose.orientation =
-        tf::createQuaternionMsgFromYaw(angle + noise_gen_[2](rng_));
-    odom_msg_.twist.twist.linear.x += noise_gen_[3](rng_);
-    odom_msg_.twist.twist.linear.y += noise_gen_[4](rng_);
-    odom_msg_.twist.twist.angular.z += noise_gen_[5](rng_);
+
+    if (timestamp_.toSec() == 0.0)
+      timestamp_ = timekeeper.GetSimTime();
+
+    const double dt = (timekeeper.GetSimTime() - timestamp_).toSec();
+    timestamp_ = timekeeper.GetSimTime();
+    tf::Pose pose;
+    tf::poseMsgToTF(odom_msg_.pose.pose, pose);
+    double heading = tf::getYaw(pose.getRotation());
+    //const double linear_vel_noise = noise_gen_[2](rng_);
+    //const double angular_vel_noise = noise_gen_[4](rng_);
+    const double linear_vel_noise = 0.0;
+    const double angular_vel_noise = 0.0;
+    
+    if (fabs(angular_vel) < 1e-6) {
+      const double direction = heading + (angular_vel + angular_vel_noise) * dt * 0.5;
+      odom_msg_.pose.pose.position.x += (linear_vel + linear_vel_noise) * dt * cos(direction);
+      odom_msg_.pose.pose.position.y += (linear_vel + linear_vel_noise) * dt * sin(direction);
+      heading += (angular_vel + angular_vel_noise) * dt;
+      odom_msg_.pose.pose.orientation = tf::createQuaternionMsgFromYaw(heading);
+    } else {
+      /// Exact integration (should solve problems when angular is zero):
+      const double heading_old = heading;
+      const double r = ((linear_vel + linear_vel_noise) * dt) / ((angular_vel + angular_vel_noise) * dt);
+      heading += (angular_vel + angular_vel_noise) * dt;
+      odom_msg_.pose.pose.position.x += r * (sin(heading) - sin(heading_old));
+      odom_msg_.pose.pose.position.y += -r * (cos(heading) - cos(heading_old));
+      odom_msg_.pose.pose.orientation = tf::createQuaternionMsgFromYaw(heading);
+    }
+
+    odom_msg_.twist.twist.linear.x = linear_vel;
+    odom_msg_.twist.twist.angular.z = angular_vel;
 
     if (enable_odom_pub_) {
       ground_truth_pub_.publish(ground_truth_msg_);

@@ -66,6 +66,7 @@ class DiffDrive : public flatland_server::ModelPlugin {
   ros::Publisher odom_pub_;
   ros::Publisher ground_truth_pub_;
   ros::Publisher twist_pub_;
+  ros::Time timestamp_;
   Body* body_;
   geometry_msgs::Twist twist_msg_;
   nav_msgs::Odometry odom_msg_;
